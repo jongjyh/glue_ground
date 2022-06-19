@@ -119,46 +119,32 @@ def double_batch_collate(features) -> Dict[str, Any]:
 class NASTrainer(Trainer):
     def __init__(self, config, model: Union[PreTrainedModel, nn.Module] = None, args: TrainingArguments = None, data_collator: Optional[DataCollator] = None, train_dataset: Optional[Dataset] = None, eval_dataset: Optional[Dataset] = None, tokenizer: Optional[PreTrainedTokenizerBase] = None, model_init: Callable[[], PreTrainedModel] = None, compute_metrics: Optional[Callable[[EvalPrediction], Dict]] = None, callbacks: Optional[List[TrainerCallback]] = None, optimizers: Tuple[torch.optim.Optimizer, torch.optim.lr_scheduler.LambdaLR] = (None,None), preprocess_logits_for_metrics: Callable[[torch.Tensor, torch.Tensor], torch.Tensor] = None):
         super().__init__(model, args, data_collator, train_dataset, eval_dataset, tokenizer, model_init, compute_metrics, callbacks, optimizers, preprocess_logits_for_metrics)
-
-        def get_weights(model):
-            weights,arch_weights = [], []
-            for name,prmt in model.named_parameters():
-                if re.fullmatch(".*arch_parameters.*",name):
-                    arch_weights.append(prmt)
-                elif re.fullmatch(".*cells.*",name):
-                    weights.append(prmt)
-            return weights,arch_weights 
-            
-        weights,arch_weights = get_weights(model)
-        self.a_optimizer = torch.optim.Adam(
-            arch_weights,
-            lr=config.arch_learning_rate,
-            betas=(0.5, 0.999),
-            weight_decay=config.arch_weight_decay,
-        )
-        self.create_optimizer(pattern=".*cells.*")
         # dataset
         self.train_dataset = SearchDataset("s_dst",(self.train_dataset,self.eval_dataset),self.train_dataset,self.eval_dataset) 
         self.data_collator=double_batch_collate
+        self.config = config
 
-
-    def create_optimizer(self,pattern=None):
+    def create_optimizer(self):
         """
         Setup the optimizer.
 
         We provide a reasonable default that works well. If you want to use something else, you can pass a tuple in the
         Trainer's init through `optimizers`, or subclass and override this method in a subclass.
         """
+        pattern="(.*cells.*|.*classifier.*)"
+
         if self.optimizer is None:
             decay_parameters = get_parameter_names(self.model, [nn.LayerNorm])
             decay_parameters = [name for name in decay_parameters if "bias" not in name]
             optimizer_grouped_parameters = [
                 {
                     "params": [p for n, p in self.model.named_parameters() if n in decay_parameters and re.fullmatch(pattern,n)],
+                    "name":[n for n, p in self.model.named_parameters() if n in decay_parameters and re.fullmatch(pattern,n)],
                     "weight_decay": self.args.weight_decay,
                 },
                 {
                     "params": [p for n, p in self.model.named_parameters() if n not in decay_parameters and re.fullmatch(pattern,n)],
+                    "name":[n for n, p in self.model.named_parameters() if n not in decay_parameters and re.fullmatch(pattern,n)],
                     "weight_decay": 0.0,
                 },
             ]
@@ -173,6 +159,24 @@ class NASTrainer(Trainer):
                 )
             else:
                 self.optimizer = optimizer_cls(optimizer_grouped_parameters, **optimizer_kwargs)
+
+        def get_weights(model):
+            weights,arch_weights = [], []
+            for name,prmt in model.named_parameters():
+                if re.fullmatch(".*arch_parameters.*",name):
+                    arch_weights.append(prmt)
+                elif re.fullmatch(".*cells.*",name):
+                    weights.append(prmt)
+            return weights,arch_weights 
+
+        if self.a_optimizer is None: 
+            weights,arch_weights = get_weights(self.model)
+            self.a_optimizer = torch.optim.Adam(
+                arch_weights,
+                lr=self.config.arch_learning_rate,
+                betas=(0.5, 0.999),
+                weight_decay=self.config.arch_weight_decay,
+            )
 
         if is_sagemaker_mp_enabled():
             self.optimizer = smp.DistributedOptimizer(self.optimizer)
@@ -236,7 +240,7 @@ class NASTrainer(Trainer):
             self.model = self.call_model_init(trial)
             model_reloaded = True
             # Reinitializes optimizer and scheduler
-            self.optimizer, self.lr_scheduler = None, None
+            self.optimizer,self.a_optimizer, self.lr_scheduler = None, None,None
 
         # Load potential model checkpoint
         if isinstance(resume_from_checkpoint, bool) and resume_from_checkpoint:
@@ -319,7 +323,8 @@ class NASTrainer(Trainer):
         
         for n,buffer in self.model.named_buffers():
             if re.fullmatch(".*tem_proportion.*",n):
-               buffer += (10.0 - 0.1) / max_steps 
+               # TODO 
+               buffer += (10.0 - 0.1) /(max_steps * 2)
         if DebugOption.UNDERFLOW_OVERFLOW in self.args.debug:
             if self.args.n_gpu > 1:
                 # nn.DataParallel(model) replicates the model, creating new variables and module
@@ -410,7 +415,7 @@ class NASTrainer(Trainer):
 
         # Update the references
         self.callback_handler.model = self.model
-        self.callback_handler.optimizer = [self.optimizer,self.a_optimizer]
+        self.callback_handler.optimizer = self.optimizer
         self.callback_handler.lr_scheduler = self.lr_scheduler
         self.callback_handler.train_dataloader = train_dataloader
         self.state.trial_name = self.hp_name(trial) if self.hp_name is not None else None
@@ -673,10 +678,3 @@ class NASTrainer(Trainer):
         self.control = self.callback_handler.on_train_end(args, self.state, self.control)
 
         return TrainOutput(self.state.global_step, train_loss, metrics)
-    # def training_step(self, model: nn.Module, inputs: Dict[str, Union[torch.Tensor, Any]]) -> torch.Tensor:
-    #     self.w_optimizer.zero_grad() 
-    #     base_loss = super().training_step(model, inputs)
-    #     base_loss.backward()
-    #     torch.nn.clip_grad_norm(model.parameters(),5)
-    #     self.w_optimizer.step()
-         

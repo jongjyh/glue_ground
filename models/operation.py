@@ -1,3 +1,5 @@
+from ast import Not
+from distutils.command.config import config
 import torch.nn as nn
 OPS = {
     "none": lambda C_in, C_out, stride, affine, dila,track_running_stats: Zero(
@@ -69,11 +71,59 @@ OPS = {
         affine,
         track_running_stats,
     ),
-    "skip_connect": lambda C_in, C_out, stride,dila, affine, track_running_stats: Identity()
+    "skip_connect": lambda C_in, C_out, stride,dila, affine, track_running_stats: Identity(),
+    "lora": lambda C_in, C_out, stride,dila, affine, track_running_stats: Lora(
+       C_in,
+    )
     # if stride == 1 and C_in == C_out
     # else FactorizedReduce(C_in, C_out, stride, affine, track_running_stats),
 }
+class Lora(nn.Module):
+    def __init__(
+        self,
+        C_in,
+        lora_rank = 8,
+    ):
+        super().__init__()
+        self.down_mat = nn.Linear(C_in,lora_rank) 
+        self.up_mat = nn.Linear(lora_rank,C_in)
+        
+        self.down_mat.weight.data.normal_()
+        self.down_mat.bias.data.zero_()
+        self.up_mat.weight.data.zero_()
+        self.up_mat.bias.data.zero_()
+        # self.apply(self._init_weights)
+    def _init_weights(self,module):
+        if isinstance(module,nn.Linear):
+            module.weight.data.normal_(0,std=0.1)
+            if module.bias is not None:
+                module.bias.data.zero_()
+    def forward(self,x):
+        x = x.squeeze(-1).permute(0,2,1).contiguous()
+        output = self.up_mat(self.down_mat(x))
+        return output.unsqueeze(-1).permute(0, 2, 1, 3)
 
+class ConvLora(nn.Module):
+    def __init__(
+        self,
+        C_in,
+        lora_rank = 8,
+    ):
+        super().__init__()
+        self.down_mat = nn.Linear(C_in,lora_rank) 
+        self.up_mat = nn.Linear(lora_rank,C_in)
+        
+        self.apply(self._init_weights)
+    def _init_weights(self,module):
+        if isinstance(module,nn.Linear):
+            module.weight.data.normal_(0,std=0.1)
+            if module.bias is not None:
+                module.bias.data.zero_()
+    def forward(self,x):
+        x = x.squeeze(-1).permute(0,2,1).contiguous()
+        output = self.up_mat(self.down_mat(x))
+
+        
 class ReLUConvBN(nn.Module):
     def __init__(
         self,

@@ -15,13 +15,14 @@
 # limitations under the License.
 """ Finetuning the library models for sequence classification on GLUE."""
 # You can also adapt this script on your own text classification task. Pointers for this are left as comments.
-
+from functools import partial
 import logging
 import os
 import random
 import sys
 from dataclasses import dataclass, field
 from typing import Optional
+from click import help_option
 
 import datasets
 import numpy as np
@@ -44,7 +45,6 @@ from transformers import (
 from transformers.trainer_utils import get_last_checkpoint
 from transformers.utils import check_min_version
 from transformers.utils.versions import require_version
-from models.nasBert import NASBertForSequenceClassification
 from trainer.nasTrainer import NASTrainer
 import models.adapter as adapter 
 # Will error if the minimal version of Transformers is not installed. Remove at your own risks.
@@ -156,7 +156,6 @@ class ModelArguments:
     """
     Arguments pertaining to which model/config/tokenizer we are going to fine-tune from.
     """
-
     model_name_or_path: str = field(
         metadata={"help": "Path to pretrained model or model identifier from huggingface.co/models"}
     )
@@ -186,19 +185,47 @@ class ModelArguments:
         },
     )
 
+@dataclass
+class HPSearchArguments:
+    """
+    Arguments for Hyperparameters search
+    """
+    
+    do_search: bool = field(
+        default=False, metadata={"help": "TODO"}
+    )
+    n_trials: int = field(
+        default=10,
+        metadata={
+            "help": "TODO"
+        },
+    )
+
+    metric: str = field(
+        default="eval/loss",
+        metadata={"help": "The specific model version to use (can be a branch name, tag name or commit id)."},
+    )
+    project: str = field(
+        default="huggingface",
+        metadata={"help": "The specific model version to use (can be a branch name, tag name or commit id)."},
+    )
+    direction: str = field(
+        default="minimize",
+        metadata={"help": "The specific model version to use (can be a branch name, tag name or commit id)."},
+    )
 
 def main():
     # See all possible arguments in src/transformers/training_args.py
     # or by passing the --help flag to this script.
     # We now keep distinct sets of args, for a cleaner separation of concerns.
 
-    parser = HfArgumentParser((ModelArguments, DataTrainingArguments, TrainingArguments))
+    parser = HfArgumentParser((ModelArguments, DataTrainingArguments, TrainingArguments,HPSearchArguments))
     if len(sys.argv) == 2 and sys.argv[1].endswith(".json"):
         # If we pass only one argument to the script and it's the path to a json file,
         # let's parse it to get our arguments.
-        model_args, data_args, training_args = parser.parse_json_file(json_file=os.path.abspath(sys.argv[1]))
+        model_args, data_args, training_args,hp_args = parser.parse_json_file(json_file=os.path.abspath(sys.argv[1]))
     else:
-        model_args, data_args, training_args = parser.parse_args_into_dataclasses()
+        model_args, data_args, training_args,hp_args = parser.parse_args_into_dataclasses()
 
     # Setup logging
     logging.basicConfig(
@@ -346,21 +373,27 @@ def main():
         revision=model_args.model_revision,
         use_auth_token=True if model_args.use_auth_token else None,
     )
-    model = AutoModelForSequenceClassification.from_pretrained(
-        model_args.model_name_or_path,
-        from_tf=bool(".ckpt" in model_args.model_name_or_path),
-        config=config,
-        cache_dir=model_args.cache_dir,
-        revision=model_args.model_revision,
-        use_auth_token=True if model_args.use_auth_token else None,
-    )
-    # TODO
-    config.arch_learning_rate = 3e-3
-    config.arch_weight_decay = 1e-3 
-    config.adapter_type = "normal"
-    config.normal_adapter_residual=True
-    model = adapter.modify_with_adapters(model,config)
-
+    def model_init(trial=None,config=config):
+        model = AutoModelForSequenceClassification.from_pretrained(
+            model_args.model_name_or_path,
+            from_tf=bool(".ckpt" in model_args.model_name_or_path),
+            config=config,
+            cache_dir=model_args.cache_dir,
+            revision=model_args.model_revision,
+            use_auth_token=True if model_args.use_auth_token else None,
+        )
+        if trial is None: return model
+        # Hp Search
+        
+        config.pattern="attention"
+        config.arch_learning_rate = trial.pop("arch_learning_rate",3e-3)
+        config.arch_weight_decay = trial.pop("arch_weight_decay",1e-3) 
+        config.adapter_type = "normal"
+        config.normal_adapter_residual=False
+        model = adapter.modify_with_adapters(model,config)
+        return model
+    model = model_init()
+        
     # Preprocessing the raw_datasets
     if data_args.task_name is not None:
         sentence1_key, sentence2_key = task_to_keys[data_args.task_name]
@@ -493,19 +526,31 @@ def main():
         data_collator = DataCollatorWithPadding(tokenizer, pad_to_multiple_of=8)
     else:
         data_collator = None
-
     # Initialize our Trainer
     trainer = NASTrainer(
         config=config,
-        model=model,
         args=training_args,
         train_dataset=train_dataset if training_args.do_train else None,
         eval_dataset=eval_dataset if training_args.do_eval else None,
         compute_metrics=compute_metrics,
         tokenizer=tokenizer,
         data_collator=data_collator,
+        model_init=partial(model_init,config=config)
     )
+    if hp_args.do_search:
+        hp_space = {
+            "method": "random",
+            "metric": {"name": "objective", "goal": "minimize"},
+            "parameters": {
+                "learning_rate": {"distribution": "uniform", "min": 1e-6, "max": 1e-4},
+                "num_train_epochs": {"distribution": "int_uniform", "min": 10, "max": 20},
+                # "seed": {"distribution": "int_uniform", "min": 1, "max": 40},
+                "per_device_train_batch_size": {"values": [32]},
+                "arch_learning_rate": {"distribution": "uniform", "min": 1e-6, "max": 1e-3},
+                "arch_weight_decay": {"distribution": "uniform", "min": 0.0, "max": 1e-4},
+            }
 
+        }
     # Training
     if training_args.do_train:
         checkpoint = None
@@ -513,7 +558,11 @@ def main():
             checkpoint = training_args.resume_from_checkpoint
         elif last_checkpoint is not None:
             checkpoint = last_checkpoint
-        train_result = trainer.train(resume_from_checkpoint=checkpoint)
+        if hp_args.do_search:
+            train_result = trainer.hyperparameter_search(backend="wandb",hp_space=lambda trial:hp_space,resume_from_checkpoint=checkpoint,**hp_args.__dict__)
+            return 
+        else :
+            train_result = trainer.train(resume_from_checkpoint=checkpoint)
         metrics = train_result.metrics
         max_train_samples = (
             data_args.max_train_samples if data_args.max_train_samples is not None else len(train_dataset)
