@@ -121,7 +121,8 @@ class NAS201SearchCell(nn.Module):
         return nodes[-1]
 
     # uniform random sampling per iteration, SETN
-    def forward_urs(self, inputs):
+    def forward_urs(self, inputs,hardwts,index):
+        inputs = inputs.unsqueeze(-1).permute(0,2,1,3) 
         nodes = [inputs]
         for i in range(1, self.max_nodes):
             while True:  # to avoid select zero for all ops
@@ -139,7 +140,8 @@ class NAS201SearchCell(nn.Module):
             for j, select_op in enumerate(sops):
                 inter_nodes.append(select_op(nodes[j]))
             nodes.append(sum(inter_nodes))
-        return nodes[-1]
+        output = nodes[-1].squeeze(-1).permute(0,2,1).contiguous()
+        return output
 
     # select the argmax
     def forward_select(self, inputs, weightss):

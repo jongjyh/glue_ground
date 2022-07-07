@@ -44,7 +44,8 @@ from transformers import (
 from transformers.trainer_utils import get_last_checkpoint
 from transformers.utils import check_min_version
 from transformers.utils.versions import require_version
-from models.pyraidBert import PyraidBertForSequenceClassification
+from models.l0bert import L0BertForSequenceClassification
+from trainer.l0trainer import l0trainer
 
 # Will error if the minimal version of Transformers is not installed. Remove at your own risks.
 check_min_version("4.18.0")
@@ -184,8 +185,35 @@ class ModelArguments:
             "with private models)."
         },
     )
+    prune_module: str = field(
+        default="output",
+        metadata={"help": "prune layer"},
+    )
 
+    rand_w: bool = field(
+        default=False,
+        metadata={
+            "help": "Will use the token generated when running `transformers-cli login` (necessary to use this script "
+            "with private models)."
+        },
+    )
+    lamb: float = field(
+        default=0.1,
+        metadata={"help": "prune layer"},
+    )
 
+    temperature: float = field(
+        default=0.5,
+        metadata={"help": "prune layer"},
+    )
+    a_lr: float = field(
+        default=1e-4,
+        metadata={"help": "prune layer"},
+    )
+    droprate_init: float = field(
+        default=0.5,
+        metadata={"help": "prune layer"},
+    )
 def main():
     # See all possible arguments in src/transformers/training_args.py
     # or by passing the --help flag to this script.
@@ -338,6 +366,12 @@ def main():
         revision=model_args.model_revision,
         use_auth_token=True if model_args.use_auth_token else None,
     )
+    config.prune_module = model_args.prune_module
+    config.droprate_init = model_args.droprate_init
+    config.temperature = model_args.temperature
+    config.lamb = model_args.lamb
+    config.use_init = model_args.rand_w
+    config.a_lr = model_args.a_lr
     tokenizer = AutoTokenizer.from_pretrained(
         model_args.tokenizer_name if model_args.tokenizer_name else model_args.model_name_or_path,
         cache_dir=model_args.cache_dir,
@@ -345,7 +379,7 @@ def main():
         revision=model_args.model_revision,
         use_auth_token=True if model_args.use_auth_token else None,
     )
-    model = PyraidBertForSequenceClassification.from_pretrained(
+    model = L0BertForSequenceClassification.from_pretrained(
         model_args.model_name_or_path,
         from_tf=bool(".ckpt" in model_args.model_name_or_path),
         config=config,
@@ -353,6 +387,16 @@ def main():
         revision=model_args.model_revision,
         use_auth_token=True if model_args.use_auth_token else None,
     )
+    if config.use_init:
+        model.use_init_weights()
+    # model = AutoModelForSequenceClassification.from_pretrained(
+    #     model_args.model_name_or_path,
+    #     from_tf=bool(".ckpt" in model_args.model_name_or_path),
+    #     config=config,
+    #     cache_dir=model_args.cache_dir,
+    #     revision=model_args.model_revision,
+    #     use_auth_token=True if model_args.use_auth_token else None,
+    # )
 
     # Preprocessing the raw_datasets
     if data_args.task_name is not None:
@@ -488,7 +532,7 @@ def main():
         data_collator = None
 
     # Initialize our Trainer
-    trainer = Trainer(
+    trainer = l0trainer(
         model=model,
         args=training_args,
         train_dataset=train_dataset if training_args.do_train else None,
@@ -497,6 +541,15 @@ def main():
         tokenizer=tokenizer,
         data_collator=data_collator,
     )
+    # trainer = Trainer(
+    #     model=model,
+    #     args=training_args,
+    #     train_dataset=train_dataset if training_args.do_train else None,
+    #     eval_dataset=eval_dataset if training_args.do_eval else None,
+    #     compute_metrics=compute_metrics,
+    #     tokenizer=tokenizer,
+    #     data_collator=data_collator,
+    # )
 
     # Training
     if training_args.do_train:

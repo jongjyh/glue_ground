@@ -373,20 +373,26 @@ def main():
         revision=model_args.model_revision,
         use_auth_token=True if model_args.use_auth_token else None,
     )
-    model = AutoModelForSequenceClassification.from_pretrained(
-        model_args.model_name_or_path,
-        from_tf=bool(".ckpt" in model_args.model_name_or_path),
-        config=config,
-        cache_dir=model_args.cache_dir,
-        revision=model_args.model_revision,
-        use_auth_token=True if model_args.use_auth_token else None,
-    )
-    config.ans_pattern="attention"
-    config.ans_arch_learning_rate = 3e-3
-    config.ans_arch_weight_decay = 1e-3 
-    config.ans_adapter_type = "normal"
-    config.ans_normal_adapter_residual=False
-    model = adapter.modify_with_adapters(model,config)
+    def model_init(trial=None,config=config):
+        model = AutoModelForSequenceClassification.from_pretrained(
+            model_args.model_name_or_path,
+            from_tf=bool(".ckpt" in model_args.model_name_or_path),
+            config=config,
+            cache_dir=model_args.cache_dir,
+            revision=model_args.model_revision,
+            use_auth_token=True if model_args.use_auth_token else None,
+        )
+        if trial is None: return model
+        # Hp Search
+        
+        config.ans_pattern="attention"
+        config.ans_arch_learning_rate = trial.pop("arch_learning_rate",3e-3)
+        config.ans_arch_weight_decay = trial.pop("arch_weight_decay",1e-3) 
+        config.ans_adapter_type = "normal"
+        config.ans_normal_adapter_residual=False
+        model = adapter.modify_with_adapters(model,config)
+        return model
+    model = model_init()
         
     # Preprocessing the raw_datasets
     if data_args.task_name is not None:
@@ -522,7 +528,6 @@ def main():
         data_collator = None
     # Initialize our Trainer
     trainer = NASTrainer(
-        model=model,
         config=config,
         args=training_args,
         train_dataset=train_dataset if training_args.do_train else None,
@@ -530,6 +535,7 @@ def main():
         compute_metrics=compute_metrics,
         tokenizer=tokenizer,
         data_collator=data_collator,
+        model_init=partial(model_init,config=config)
     )
     if hp_args.do_search:
         hp_space = {
@@ -555,7 +561,7 @@ def main():
         if hp_args.do_search:
             train_result = trainer.hyperparameter_search(backend="wandb",hp_space=lambda trial:hp_space,resume_from_checkpoint=checkpoint,**hp_args.__dict__)
             return 
-        else:
+        else :
             train_result = trainer.train(resume_from_checkpoint=checkpoint)
         metrics = train_result.metrics
         max_train_samples = (

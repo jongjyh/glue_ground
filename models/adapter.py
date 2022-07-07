@@ -13,7 +13,7 @@ from models.operation import OPS
 
 ACT2FN["identity"] = lambda x: x
 op_names=(
-    # "none",
+    "none",
     # "avg_pool_3",
     # "max_pool_3",
     # "nor_conv_3",
@@ -22,9 +22,13 @@ op_names=(
     # "dil_conv_3",
     # "dil_conv_5",
     # "dil_conv_7",
-    "skip_connect",
+    # "skip_connect",
     "lora",
 )
+FORWARD_ARCH={
+    "random":"forward_urs",
+    "gdas":"forward_gdas",
+}
 
 def get_adapter(adapter_type):
     if adapter_type == "normal":
@@ -36,7 +40,9 @@ class NASAdapter(nn.Module):
         super().__init__()
         self.adapter_input_size = transformer_config.hidden_size
         # self.non_linearity = ACT2FN[config.adapter_non_linearity]
-        self.residual = config.normal_adapter_residual
+        self.residual = config.ans_normal_adapter_residual
+        self.ans_forward = "gdas" 
+        self.ans_forward = FORWARD_ARCH[self.ans_forward]
         self.cells = SearchCell(
                                 transformer_config.hidden_size,
                                 transformer_config.hidden_size,
@@ -49,16 +55,17 @@ class NASAdapter(nn.Module):
         self.arch_parameters = torch.nn.Parameter(1e-3 * torch.randn(self.num_edges,len(self.op_names)))
         self.tem = 10.0
         self.register_buffer("tem_proportion",torch.tensor([0.,]))
+        self.index = None
+        self.search =True
 
-        self.hardwts = torch.zeros_like(self.arch_parameters)
-        self.index = torch.randint(0,self.hardwts.shape[-1],(self.hardwts.shape[0],1))
-        self.hardwts.scatter_(-1,self.index,1.0)
 
     def forward(self, x):
         def get_gumbel_prob(xins):
+            if not self.search:
+                return self.hardwts.detach(), self.index.detach()
             while True:
                 gumbels = -torch.empty_like(xins).exponential_().log()
-                logits = (xins.log_softmax(dim=1) + gumbels) / self.tem
+                logits = (xins.log_softmax(dim=1) + gumbels) / 0.5
                 probs = nn.functional.softmax(logits, dim=1)
                 index = probs.max(-1, keepdim=True)[1]
                 one_h = torch.zeros_like(logits).scatter_(-1, index, 1.0)
@@ -71,17 +78,14 @@ class NASAdapter(nn.Module):
                     continue
                 else:
                     break
-            return hardwts, index
-        if True:
-            # random select arch
-            hardwts ,index= self.hardwts  , self.index
-        else:
-            hardwts, index = get_gumbel_prob(self.arch_parameters)
             self.tem -= self.tem_proportion.item()   
+            self.hardwts, self.index = hardwts.detach(),index.detach()  
+            return hardwts, index
+        hardwts, index = get_gumbel_prob(self.arch_parameters)
         if self.residual:
-            output = self.cells.forward_gdas(x,hardwts,index) + x
+            output = getattr(self.cells,self.ans_forward)(x,hardwts,index) + x
         else:
-            output = self.cells.forward_gdas(x,hardwts,index) 
+            output = getattr(self.cells,self.ans_forward)(x,hardwts,index) 
         return output
 
 
@@ -109,6 +113,7 @@ class NASBertAttn(BertSelfAttention):
         self.query =bertAttn.query  
         self.key =bertAttn.key  
         self.value =bertAttn.value  
+        
 
         self.dropout =bertAttn.dropout      
         self.position_embedding_type =bertAttn.position_embedding_type 
@@ -116,8 +121,8 @@ class NASBertAttn(BertSelfAttention):
         # self.distance_embedding =bertAttn.distance_embedding  
 
         self.is_decoder =bertAttn.is_decoder  
-        self.lora_query = get_adapter(config.adapter_type)(config, transformer_config)
-        self.lora_value = get_adapter(config.adapter_type)(config, transformer_config)
+        self.lora_query = get_adapter(config.ans_adapter_type)(config, transformer_config)
+        self.lora_value = get_adapter(config.ans_adapter_type)(config, transformer_config)
     
     def forward(
         self,
@@ -219,18 +224,19 @@ class NASBertAttn(BertSelfAttention):
 def modify_with_adapters(transformer, config):
     for m_name, module in dict(transformer.named_modules()).items():
         if re.fullmatch(".*layer.[0-9]*", m_name):
-            if config.pattern == "adapter":
+            if config.ans_pattern == "adapter":
                 module.output = NASBertFF(
                     module.output,
                     config,
                     transformer.config,
                 )
-            elif config.pattern == "attention":
+            elif config.ans_pattern == "attention":
                 module.attention.self = NASBertAttn(
                     module.attention.self,
                     transformer.config,
                     transformer_config = config,
                 ) 
+        
     return transformer
 
 

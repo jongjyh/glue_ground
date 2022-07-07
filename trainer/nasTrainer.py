@@ -169,13 +169,13 @@ class NASTrainer(Trainer):
                     weights.append(prmt)
             return weights,arch_weights 
 
-        if self.a_optimizer is None: 
+        if not hasattr(self,"a_optimizer") or self.a_optimizer is None: 
             weights,arch_weights = get_weights(self.model)
             self.a_optimizer = torch.optim.Adam(
                 arch_weights,
-                lr=self.config.arch_learning_rate,
+                lr=self.config.ans_arch_learning_rate,
                 betas=(0.5, 0.999),
-                weight_decay=self.config.arch_weight_decay,
+                weight_decay=self.config.ans_arch_weight_decay,
             )
 
         if is_sagemaker_mp_enabled():
@@ -320,11 +320,11 @@ class NASTrainer(Trainer):
             raise ValueError(
                 f"args.max_steps must be set to a positive value if dataloader does not have a length, was {args.max_steps}"
             )
-        
+        search_steps = 100 
         for n,buffer in self.model.named_buffers():
             if re.fullmatch(".*tem_proportion.*",n):
                # TODO 
-               buffer += (10.0 - 0.1) /(max_steps * 2)
+               buffer += (10.0 - 0.1) /(search_steps * 2)
         if DebugOption.UNDERFLOW_OVERFLOW in self.args.debug:
             if self.args.n_gpu > 1:
                 # nn.DataParallel(model) replicates the model, creating new variables and module
@@ -581,10 +581,15 @@ class NASTrainer(Trainer):
 
                     model.zero_grad()
                     # arch search
-                    arch_loss_step = self.training_step(model,inputs[1])
-                    arch_loss += arch_loss_step                   
-                    self.a_optimizer.step()
-                    model.zero_grad()
+                    if self.state.global_step < search_steps:
+                        arch_loss_step = self.training_step(model,inputs[1])
+                        arch_loss += arch_loss_step                   
+                        self.a_optimizer.step()
+                        model.zero_grad()
+                    elif self.state.global_step == search_steps:
+                         for n,m in model.named_modules():
+                             if re.fullmatch(".*(adapter|lora_query|lora_value)",n):
+                                 m.search=False
 
 
                     self.state.global_step += 1
