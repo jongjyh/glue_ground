@@ -3,10 +3,13 @@ export TASK_NAME=mrpc
 lr=2e-4
 wd=1e-1
 ep=20
+input_mode=output
+r=8
+u=0.1
 # run_name=normal_${TASK_NAME}_bert_lr${lr}_wd${wd}_ep${ep}
-run_name=${TASK_NAME}_bert_lr${lr}_wd${wd}_ep${ep}
-# CUDA_VISIBLE_DEVICES=3 WANDB_DISABLED=0 HF_DATASETS_OFFLINE=1 TRANSFORMERS_OFFLINE=1 python  run_ladder.py \
-CUDA_VISIBLE_DEVICES=0 WANDB_DISABLED=1 HF_DATASETS_OFFLINE=1 TRANSFORMERS_OFFLINE=1 python -m debugpy --listen 5660 run_ladder.py \
+run_name=${TASK_NAME}_bert_lr${lr}_wd${wd}_ep${ep}_input${input_mode}_r${r}_u${u}
+# CUDA_VISIBLE_DEVICES=0 WANDB_DISABLED=0 HF_DATASETS_OFFLINE=1 TRANSFORMERS_OFFLINE=1 python  run_ladder.py \
+CUDA_VISIBLE_DEVICES=0 WANDB_DISABLED=0 HF_DATASETS_OFFLINE=1 TRANSFORMERS_OFFLINE=1 python -m debugpy --listen 5660 run_ladder.py \
   --model_name_or_path bert-base-cased \
   --task_name $TASK_NAME \
   --do_train \
@@ -25,4 +28,7 @@ CUDA_VISIBLE_DEVICES=0 WANDB_DISABLED=1 HF_DATASETS_OFFLINE=1 TRANSFORMERS_OFFLI
   --logging_steps 250 \
   --metric_for_best_model eval_accuracy  \
   --greater_is_better 1 \
+  --input_mode $input_mode \
+  --r $r \
+  --u $u \
 

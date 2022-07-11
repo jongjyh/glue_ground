@@ -2,13 +2,20 @@ from turtle import forward
 from  transformers.models.bert.modeling_bert import *
 import torch.nn as nn
 class LadderLayers(nn.Module):
-    def __init__(self,config) -> None:
+    def __init__(self,config):
         super().__init__()
         self.r = config.r if hasattr(config,'r') else 8
-        self.intermediate_dim = config.intermediate_size//self.r
-        self.down = nn.Linear(config.intermediate_size,self.intermediate_dim)
+        input_mode = config.input_mode if hasattr(config,'input_mode') else 'output'
+        if input_mode == 'intermediate':
+            self.in_dim = config.intermediate_size
+        elif input_mode == 'output':
+            self.in_dim = config.hidden_size
+        self.intermediate_dim = self.in_dim//self.r
+        self.down = nn.Linear(self.in_dim,self.intermediate_dim)
+        self.up = nn.Linear(self.intermediate_dim,config.hidden_size)
         self.intermediate = nn.Linear(self.intermediate_dim,self.intermediate_dim)
-        self.gate = nn.Parameter(torch.zeros(1))
+        self.alpha_gate = nn.Parameter(torch.zeros(1))
+        self.beta_gate = nn.Parameter(torch.zeros(1))
         # self.temperature = config.temperature if hasattr(config,"temperature") else 0.1
         self.temperature = 0.1
         if isinstance(config.hidden_act, str):
@@ -16,23 +23,32 @@ class LadderLayers(nn.Module):
         else:
             self.intermediate_act_fn = config.hidden_act
 
-    def forward(self,backbone_hidden_states,ladder_hidden_states):
+    def forward(self,ladder_hidden_states,backbone_hidden_states=None):
         # mixing the input by gate variable
-        mu = torch.sigmoid(self.gate/self.temperature)
-        down_hidden_states = self.down(backbone_hidden_states)
+        mu = torch.sigmoid(self.alpha_gate/self.temperature)
+        if backbone_hidden_states is not None:
+            down_hidden_states = self.down(backbone_hidden_states)
+        else:
+            down_hidden_states = ladder_hidden_states
         inputs = mu * down_hidden_states + (1-mu) * ladder_hidden_states
         # inputs = self.intermediate_act_fn(inputs)
         outputs_states = self.intermediate(inputs)
         outputs_states = self.intermediate_act_fn(outputs_states)
-        return outputs_states
+        backbone_output_states = self.up(outputs_states)
+        return outputs_states,backbone_output_states
         
 class Ladder(nn.Module):
     def __init__(self,config) -> None:
         super().__init__()
+        input_mode = config.input_mode if hasattr(config,'input_mode') else 'output'
         self.num_layers = config.num_layers if hasattr(config,'num_layers') else config.num_hidden_layers
         self.ladder_layers = nn.ModuleList([LadderLayers(config) for _ in range(self.num_layers)])
-        self.r = config.r if hasattr(config,'r') else 8 
-        self.intermediate_dim = config.intermediate_size//self.r
+        self.r = config.r if hasattr(config,'r') else 8
+        if input_mode == 'intermediate':
+            self.in_dim = config.intermediate_size
+        elif input_mode == 'output':
+            self.in_dim = config.hidden_size
+        self.intermediate_dim = self.in_dim//self.r
         self.down = nn.Linear(config.hidden_size,self.intermediate_dim)
         self.up = nn.Linear(self.intermediate_dim,config.hidden_size)
         if isinstance(config.hidden_act, str):
@@ -115,12 +131,20 @@ class LadderBertEncoder(BertEncoder):
                     past_key_value,
                     output_attentions,
                 )
-                ladder_outputs = ladder_module(
-                    layer_outputs[1],
-                    ladder_hidden_states,
-                )
+                if 0<=i<=11:
+                # if i == 11:
+                    ladder_outputs,backbone_outputs = ladder_module(
+                        ladder_hidden_states ,
+                        layer_outputs[0] ,
+                        # layer_outputs[1] ,
+                    )
+                else:
+                    ladder_outputs = ladder_hidden_states
 
-            hidden_states = layer_outputs[0]
+            # hidden_states = layer_outputs[0]
+            u=0.1
+            hidden_states = (1-u)*layer_outputs[0]+u*backbone_outputs
+            # hidden_states = backbone_outputs
             ladder_hidden_states = ladder_outputs
             if use_cache:
                 next_decoder_cache += (layer_outputs[-1],)

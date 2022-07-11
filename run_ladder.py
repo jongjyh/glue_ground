@@ -187,6 +187,18 @@ class ModelArguments:
         },
     )
 
+    input_mode: str = field(
+        default='output',
+        metadata={"help": "Path to pretrained model or model identifier from huggingface.co/models"}
+    )
+    r: int = field(
+        default=8,
+        metadata={"help": "Path to pretrained model or model identifier from huggingface.co/models"}
+    )
+    u: float = field(
+        default=0.1,
+        metadata={"help": "Path to pretrained model or model identifier from huggingface.co/models"}
+    )
 
 def main():
     # See all possible arguments in src/transformers/training_args.py
@@ -355,6 +367,9 @@ def main():
         revision=model_args.model_revision,
         use_auth_token=True if model_args.use_auth_token else None,
     )
+    config.input_mode =model_args.input_mode
+    config.r = model_args.r
+    config.u = model_args.u
 
     # Preprocessing the raw_datasets
     if data_args.task_name is not None:
