@@ -191,6 +191,10 @@ class ModelArguments:
         default='output',
         metadata={"help": "Path to pretrained model or model identifier from huggingface.co/models"}
     )
+    beta_mode: str = field(
+        default='parameter',
+        metadata={"help": "Path to pretrained model or model identifier from huggingface.co/models"}
+    )
     r: int = field(
         default=8,
         metadata={"help": "Path to pretrained model or model identifier from huggingface.co/models"}
@@ -200,6 +204,14 @@ class ModelArguments:
         metadata={"help": "Path to pretrained model or model identifier from huggingface.co/models"}
     )
 
+    a_tem: float = field(
+        default=0.1,
+        metadata={"help": "Path to pretrained model or model identifier from huggingface.co/models"}
+    )
+    b_tem: float = field(
+        default=0.1,
+        metadata={"help": "Path to pretrained model or model identifier from huggingface.co/models"}
+    )
 def main():
     # See all possible arguments in src/transformers/training_args.py
     # or by passing the --help flag to this script.
@@ -352,6 +364,13 @@ def main():
         revision=model_args.model_revision,
         use_auth_token=True if model_args.use_auth_token else None,
     )
+    config.input_mode =model_args.input_mode
+    config.r = model_args.r
+    config.u = model_args.u
+    config.a_tem = model_args.a_tem
+    config.b_tem = model_args.b_tem
+    config.beta_mode = model_args.beta_mode
+
     tokenizer = AutoTokenizer.from_pretrained(
         model_args.tokenizer_name if model_args.tokenizer_name else model_args.model_name_or_path,
         cache_dir=model_args.cache_dir,
@@ -367,9 +386,6 @@ def main():
         revision=model_args.model_revision,
         use_auth_token=True if model_args.use_auth_token else None,
     )
-    config.input_mode =model_args.input_mode
-    config.r = model_args.r
-    config.u = model_args.u
 
     # Preprocessing the raw_datasets
     if data_args.task_name is not None:

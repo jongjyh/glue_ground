@@ -7,7 +7,7 @@ class LadderLayers(nn.Module):
         self.r = config.r if hasattr(config,'r') else 8
         input_mode = config.input_mode if hasattr(config,'input_mode') else 'output'
         if input_mode == 'intermediate':
-            self.in_dim = config.intermediate_size
+            self.in_dim = config.intermediate_size 
         elif input_mode == 'output':
             self.in_dim = config.hidden_size
         self.intermediate_dim = self.in_dim//self.r
@@ -15,9 +15,14 @@ class LadderLayers(nn.Module):
         self.up = nn.Linear(self.intermediate_dim,config.hidden_size)
         self.intermediate = nn.Linear(self.intermediate_dim,self.intermediate_dim)
         self.alpha_gate = nn.Parameter(torch.zeros(1))
-        self.beta_gate = nn.Parameter(torch.zeros(1))
-        # self.temperature = config.temperature if hasattr(config,"temperature") else 0.1
-        self.temperature = 0.1
+        self.b_tem = config.b_tem if hasattr(config,"b_tem") else 0.1
+        self.u = config.u if hasattr(config,'u') else 0.2
+        beta_mode = config.beta_mode if hasattr(config,"beta_mode") else 'parameter'
+        if beta_mode == 'constant':
+            self.register_buffer("beta_gate",torch.logit(torch.FloatTensor([ self.u ]))*self.b_tem)
+        elif beta_mode == 'parameter':
+            self.beta_gate = nn.Parameter(torch.logit(torch.FloatTensor([ self.u ]))*self.b_tem)
+        self.temperature = config.a_tem if hasattr(config,"a_tem") else 0.1
         if isinstance(config.hidden_act, str):
             self.intermediate_act_fn = ACT2FN[config.hidden_act]
         else:
@@ -31,10 +36,12 @@ class LadderLayers(nn.Module):
         else:
             down_hidden_states = ladder_hidden_states
         inputs = mu * down_hidden_states + (1-mu) * ladder_hidden_states
-        # inputs = self.intermediate_act_fn(inputs)
-        outputs_states = self.intermediate(inputs)
-        outputs_states = self.intermediate_act_fn(outputs_states)
-        backbone_output_states = self.up(outputs_states)
+        inputs = self.intermediate_act_fn(inputs)
+        outputs_states= self.intermediate(inputs)
+        if backbone_hidden_states is not None:
+            backbone_output_states = self.up(outputs_states)
+        else:
+            backbone_output_states = None
         return outputs_states,backbone_output_states
         
 class Ladder(nn.Module):
@@ -55,6 +62,7 @@ class Ladder(nn.Module):
             self.intermediate_act_fn = ACT2FN[config.hidden_act]
         else:
             self.intermediate_act_fn = config.hidden_act
+        
 
     def init_ladder_states(self,hidden_states):
         # return self.intermediate_act_fn(self.down(hidden_states))
@@ -70,6 +78,7 @@ class LadderBertEncoder(BertEncoder):
         super().__init__(config)
         self.layer = nn.ModuleList([LadderBertLayer(config) for _ in range(config.num_hidden_layers)])
         self.ladder = Ladder(config)
+        self.b_tem = config.b_tem if hasattr(config,"b_tem") else 0.1
         
         
 
@@ -130,21 +139,21 @@ class LadderBertEncoder(BertEncoder):
                     encoder_attention_mask,
                     past_key_value,
                     output_attentions,
+                    ladder_module,
                 )
                 if 0<=i<=11:
-                # if i == 11:
                     ladder_outputs,backbone_outputs = ladder_module(
                         ladder_hidden_states ,
-                        layer_outputs[0] ,
                         # layer_outputs[1] ,
+                        # layer_outputs[0] if i == 0 or i==5 or i== 11 else None
+                        layer_outputs[0] 
                     )
+                    if backbone_outputs is None: backbone_outputs = layer_outputs[0]
                 else:
                     ladder_outputs = ladder_hidden_states
 
-            # hidden_states = layer_outputs[0]
-            u=0.1
+            u=torch.sigmoid(ladder_module.beta_gate / self.b_tem)
             hidden_states = (1-u)*layer_outputs[0]+u*backbone_outputs
-            # hidden_states = backbone_outputs
             ladder_hidden_states = ladder_outputs
             if use_cache:
                 next_decoder_cache += (layer_outputs[-1],)
@@ -153,7 +162,11 @@ class LadderBertEncoder(BertEncoder):
                 if self.config.add_cross_attention:
                     all_cross_attentions = all_cross_attentions + (layer_outputs[2],)
 
-        ladder_hidden_states = self.ladder.output_last_logits(ladder_hidden_states)
+        # merge the final feature or not
+        if backbone_outputs is not None:
+            hidden_states = u*layer_outputs[0]+(1-u)*backbone_outputs
+        else:
+            hidden_states = layer_outputs[0]
         if output_hidden_states:
             all_hidden_states = all_hidden_states + (hidden_states,)
 
@@ -170,7 +183,7 @@ class LadderBertEncoder(BertEncoder):
                 if v is not None
             )
         return BaseModelOutputWithPastAndCrossAttentions(
-            last_hidden_state=ladder_hidden_states,
+            last_hidden_state=hidden_states,
             past_key_values=next_decoder_cache,
             hidden_states=all_hidden_states,
             attentions=all_self_attentions,
@@ -192,6 +205,7 @@ class LadderBertLayer(BertLayer):
         encoder_attention_mask: Optional[torch.FloatTensor] = None,
         past_key_value: Optional[Tuple[Tuple[torch.FloatTensor]]] = None,
         output_attentions: Optional[bool] = False,
+        ladder_module = None,
     ) -> Tuple[torch.Tensor]:
         # decoder uni-directional self-attention cached key/values tuple is at positions 1,2
         self_attn_past_key_value = past_key_value[:2] if past_key_value is not None else None
@@ -268,5 +282,6 @@ class LadderBertForSequenceClassification(BertForSequenceClassification):
     
     def freeze(self):
         for n,m in self.named_parameters():
-            if 'ladder' not in n:
+            # if not('ladder' in n or 'classifier' in n) :
+            if not('ladder' in n ) :
                 m.requires_grad_(False)
