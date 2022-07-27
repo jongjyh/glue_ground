@@ -1,4 +1,4 @@
-from turtle import forward
+from turtle import back, forward
 from  transformers.models.bert.modeling_bert import *
 import torch.nn as nn
 class LadderLayers(nn.Module):
@@ -27,19 +27,43 @@ class LadderLayers(nn.Module):
             self.intermediate_act_fn = ACT2FN[config.hidden_act]
         else:
             self.intermediate_act_fn = config.hidden_act
+        
+        self.add_layer_norm_before_adapter = False
+        self.add_layer_norm_after_adapter = True
+        if self.add_layer_norm_before_adapter:
+            self.pre_layer_norm = nn.LayerNorm(self.intermediate_dim, eps=config.layer_norm_eps)
+        if self.add_layer_norm_after_adapter:
+            self.post_layer_norm = nn.LayerNorm(self.in_dim, eps=config.layer_norm_eps)
+        self.dropout = nn.Dropout(config.hidden_dropout_prob)
+
 
     def forward(self,ladder_hidden_states,backbone_hidden_states=None):
         # mixing the input by gate variable
         mu = torch.sigmoid(self.alpha_gate/self.temperature)
         if backbone_hidden_states is not None:
+            backbone_hidden_states = self.dropout(backbone_hidden_states)
             down_hidden_states = self.down(backbone_hidden_states)
         else:
             down_hidden_states = ladder_hidden_states
+        # if self.add_layer_norm_before_adapter:
+        #     ladder_hidden_states = self.pre_layer_norm(ladder_hidden_states)
         inputs = mu * down_hidden_states + (1-mu) * ladder_hidden_states
+        if self.add_layer_norm_before_adapter:
+            inputs = self.pre_layer_norm(inputs)
+
+        if self.add_layer_norm_before_adapter:
+            inputs = self.pre_layer_norm(inputs)
+        
         inputs = self.intermediate_act_fn(inputs)
         outputs_states= self.intermediate(inputs)
+        # outputs_states = self.dropout(outputs_states)
+        
+            
         if backbone_hidden_states is not None:
             backbone_output_states = self.up(outputs_states)
+            if self.add_layer_norm_after_adapter:
+                backbone_output_states = self.post_layer_norm(backbone_output_states)
+            # backbone_output_states = self.dropout(backbone_output_states)
         else:
             backbone_output_states = None
         return outputs_states,backbone_output_states

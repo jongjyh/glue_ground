@@ -1,11 +1,11 @@
 mkdir ckpt 2>/dev/null
-export TASK_NAME=mnli
+export TASK_NAME=mrpc
 lr=2e-4
 wd=1e-1
-ep=3
+ep=10
 input_mode=output
 r=8
-u=0.15
+u=0.1
 a_tem=0.1
 b_tem=0.1
 beta_mode=parameter
@@ -28,7 +28,7 @@ CUDA_VISIBLE_DEVICES=0 WANDB_DISABLED=0 HF_DATASETS_OFFLINE=1 TRANSFORMERS_OFFLI
   --overwrite_output_dir  \
   --evaluation_strategy steps \
   --save_total_limit 1 \
-  --logging_steps 1000 \
+  --logging_steps 250 \
   --metric_for_best_model eval_accuracy  \
   --greater_is_better 1 \
   --input_mode $input_mode \
