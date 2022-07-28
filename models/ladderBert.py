@@ -12,7 +12,7 @@ class LadderLayers(nn.Module):
             self.in_dim = config.hidden_size
         self.intermediate_dim = self.in_dim//self.r
         self.down = nn.Linear(self.in_dim,self.intermediate_dim)
-        self.up = nn.Linear(self.intermediate_dim,config.hidden_size)
+        # self.up = nn.Linear(self.intermediate_dim,config.hidden_size)
         self.intermediate = nn.Linear(self.intermediate_dim,self.intermediate_dim)
         self.alpha_gate = nn.Parameter(torch.zeros(1))
         self.b_tem = config.b_tem if hasattr(config,"b_tem") else 0.1
@@ -50,9 +50,6 @@ class LadderLayers(nn.Module):
         inputs = mu * down_hidden_states + (1-mu) * ladder_hidden_states
         if self.add_layer_norm_before_adapter:
             inputs = self.pre_layer_norm(inputs)
-
-        if self.add_layer_norm_before_adapter:
-            inputs = self.pre_layer_norm(inputs)
         
         inputs = self.intermediate_act_fn(inputs)
         outputs_states= self.intermediate(inputs)
@@ -73,8 +70,14 @@ class Ladder(nn.Module):
         super().__init__()
         input_mode = config.input_mode if hasattr(config,'input_mode') else 'output'
         self.num_layers = config.num_layers if hasattr(config,'num_layers') else config.num_hidden_layers
-        self.ladder_layers = nn.ModuleList([LadderLayers(config) for _ in range(self.num_layers)])
+        # self.ladder_layers = nn.ModuleList([LadderLayers(config) for _ in range(self.num_layers)])
         self.r = config.r if hasattr(config,'r') else 8
+        import copy 
+        side_config =copy.deepcopy(config)
+        side_config.hidden_size=side_config.hidden_size // self.r
+        side_config.intermediate_size=side_config.intermediate_size //self.r
+        side_config.num_attention_heads=2
+        self.ladder_layers = nn.ModuleList([BertLayer(side_config) for _ in range(self.num_layers)])
         if input_mode == 'intermediate':
             self.in_dim = config.intermediate_size
         elif input_mode == 'output':
@@ -103,6 +106,9 @@ class LadderBertEncoder(BertEncoder):
         self.layer = nn.ModuleList([LadderBertLayer(config) for _ in range(config.num_hidden_layers)])
         self.ladder = Ladder(config)
         self.b_tem = config.b_tem if hasattr(config,"b_tem") else 0.1
+        self.up_modules = nn.ModuleList([nn.Linear(config.hidden_size//config.r,config.hidden_size) for _ in range(config.num_hidden_layers)])
+        self.down_modules = nn.ModuleList([nn.Linear(config.hidden_size,config.hidden_size//config.r) for _ in range(config.num_hidden_layers)])
+        self.gates = nn.ParameterList([nn.Parameter(torch.tensor([0.])) for _ in range(config.num_hidden_layers)])
         
         
 
@@ -166,18 +172,33 @@ class LadderBertEncoder(BertEncoder):
                     ladder_module,
                 )
                 if 0<=i<=11:
-                    ladder_outputs,backbone_outputs = ladder_module(
-                        ladder_hidden_states ,
-                        # layer_outputs[1] ,
-                        # layer_outputs[0] if i == 0 or i==5 or i== 11 else None
-                        layer_outputs[0] 
-                    )
+                    # ladder_outputs,backbone_outputs = ladder_module(
+                    #     ladder_hidden_states ,
+                    #     # layer_outputs[1] ,
+                    #     # layer_outputs[0] if i == 0 or i==5 or i== 11 else None
+                    #     # layer_outputs[0] 
+                    #     None
+                    # )
+                    gate = torch.sigmoid(self.gates[i]/0.1)
+                    ladder_hidden_states = gate*ladder_hidden_states+(1-gate)*self.down_modules[i](layer_outputs[0])
+                    ladder_outputs = ladder_module(
+                        ladder_hidden_states,
+                        attention_mask,
+                        layer_head_mask,
+                        encoder_hidden_states,
+                        encoder_attention_mask,
+                        past_key_value,
+                        output_attentions,
+                    )[0]
+                    backbone_outputs = self.up_modules[i](ladder_outputs)
                     if backbone_outputs is None: backbone_outputs = layer_outputs[0]
                 else:
                     ladder_outputs = ladder_hidden_states
 
-            u=torch.sigmoid(ladder_module.beta_gate / self.b_tem)
-            hidden_states = (1-u)*layer_outputs[0]+u*backbone_outputs
+            # u=torch.sigmoid(ladder_module.beta_gate / self.b_tem)
+            u=0.1
+            # hidden_states = (1-u)*layer_outputs[0]+u*backbone_outputs
+            hidden_states = layer_outputs[0]
             ladder_hidden_states = ladder_outputs
             if use_cache:
                 next_decoder_cache += (layer_outputs[-1],)
@@ -188,7 +209,8 @@ class LadderBertEncoder(BertEncoder):
 
         # merge the final feature or not
         if backbone_outputs is not None:
-            hidden_states = u*layer_outputs[0]+(1-u)*backbone_outputs
+            # hidden_states = u*layer_outputs[0]+(1-u)*backbone_outputs
+            hidden_states = u*layer_outputs[0] + (1-u) *self.ladder.output_last_logits(ladder_hidden_states)
         else:
             hidden_states = layer_outputs[0]
         if output_hidden_states:
