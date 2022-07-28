@@ -30,7 +30,6 @@ from datasets import load_dataset, load_metric
 import transformers
 from transformers import (
     AutoConfig,
-    AutoModelForSequenceClassification,
     AutoTokenizer,
     DataCollatorWithPadding,
     EvalPrediction,
@@ -45,6 +44,9 @@ from transformers.trainer_utils import get_last_checkpoint
 from transformers.utils import check_min_version
 from transformers.utils.versions import require_version
 from models.ladderBert import LadderBertForSequenceClassification
+from models.side_tfm import LadderBertForSequenceClassification as SideTFMForSequenceClassification
+import wandb
+
 
 
 
@@ -191,6 +193,10 @@ class ModelArguments:
         default='output',
         metadata={"help": "Path to pretrained model or model identifier from huggingface.co/models"}
     )
+    structure: str = field(
+        default='side_tfm',
+        metadata={"help": "Path to pretrained model or model identifier from huggingface.co/models"}
+    )
     beta_mode: str = field(
         default='parameter',
         metadata={"help": "Path to pretrained model or model identifier from huggingface.co/models"}
@@ -224,6 +230,10 @@ def main():
         model_args, data_args, training_args = parser.parse_json_file(json_file=os.path.abspath(sys.argv[1]))
     else:
         model_args, data_args, training_args = parser.parse_args_into_dataclasses()
+    if training_args.report_to =='wandb':
+        wandb.init(project='lst',name=training_args.run_name)
+
+    # wandb.init(project="lst", entity="jongjyh",name=training_args.run_name)
 
     # Setup logging
     logging.basicConfig(
@@ -332,6 +342,14 @@ def main():
     # See more about loading any type of standard or custom dataset at
     # https://huggingface.co/docs/datasets/loading_datasets.html.
 
+    # if do predict, split eval into eval,test 
+    if training_args.do_predict:
+       valid = raw_datasets['validation']
+       _raw_datasets = valid.train_test_split(train_size=0.5)
+       _raw_datasets = _raw_datasets.shuffle()
+       raw_datasets['validation'] = _raw_datasets['train']
+       raw_datasets['test'] = _raw_datasets['test']
+
     # Labels
     if data_args.task_name is not None:
         is_regression = data_args.task_name == "stsb"
@@ -370,6 +388,7 @@ def main():
     config.a_tem = model_args.a_tem
     config.b_tem = model_args.b_tem
     config.beta_mode = model_args.beta_mode
+    config.structure = model_args.structure
 
     tokenizer = AutoTokenizer.from_pretrained(
         model_args.tokenizer_name if model_args.tokenizer_name else model_args.model_name_or_path,
@@ -378,14 +397,26 @@ def main():
         revision=model_args.model_revision,
         use_auth_token=True if model_args.use_auth_token else None,
     )
-    model = LadderBertForSequenceClassification.from_pretrained(
-        model_args.model_name_or_path,
-        from_tf=bool(".ckpt" in model_args.model_name_or_path),
-        config=config,
-        cache_dir=model_args.cache_dir,
-        revision=model_args.model_revision,
-        use_auth_token=True if model_args.use_auth_token else None,
-    )
+    
+    
+    if model_args.structure == 'side_tfm':
+        model = SideTFMForSequenceClassification.from_pretrained(
+            model_args.model_name_or_path,
+            from_tf=bool(".ckpt" in model_args.model_name_or_path),
+            config=config,
+            cache_dir=model_args.cache_dir,
+            revision=model_args.model_revision,
+            use_auth_token=True if model_args.use_auth_token else None,
+        )
+    elif model_args.structure == 'side_ladder': 
+        model = LadderBertForSequenceClassification.from_pretrained(
+            model_args.model_name_or_path,
+            from_tf=bool(".ckpt" in model_args.model_name_or_path),
+            config=config,
+            cache_dir=model_args.cache_dir,
+            revision=model_args.model_revision,
+            use_auth_token=True if model_args.use_auth_token else None,
+        )
 
     # Preprocessing the raw_datasets
     if data_args.task_name is not None:
