@@ -1,19 +1,18 @@
 mkdir ckpt 2>/dev/null
 export TASK_NAME=mrpc
-lr=2e-4
+lr=2e-5
 wd=1e-1
-ep=10
+ep=5
 input_mode=output
 r=8
 u=0.1
 a_tem=0.1
 b_tem=0.1
 beta_mode=parameter
-# run_name=normal_${TASK_NAME}_bert_lr${lr}_wd${wd}_ep${ep}
-run_name=sidetfm_infusion_bert_${TASK_NAME}_learnable_head6_r${r}_lr${lr}_wd${wd}_ep${ep}
+run_name=baseline_ft_${TASK_NAME}_bert_lr${lr}_wd${wd}_ep${ep}
 # run_name=${TASK_NAME}_bert_lr${lr}_wd${wd}_ep${ep}_input${input_mode}_r${r}_u${u}_atem${a_tem}_btem${b_tem}_bmode${beta_mode}
 # CUDA_VISIBLE_DEVICES=0 WANDB_DISABLED=0 HF_DATASETS_OFFLINE=1 TRANSFORMERS_OFFLINE=1 python  run_ladder.py \
-CUDA_VISIBLE_DEVICES=0 WANDB_DISABLED=0 HF_DATASETS_OFFLINE=1 TRANSFORMERS_OFFLINE=1 python -m debugpy --listen 5678 run_ladder.py \
+CUDA_VISIBLE_DEVICES=0 WANDB_DISABLED=1 HF_DATASETS_OFFLINE=1 TRANSFORMERS_OFFLINE=1 python -m debugpy --listen 5678 run_ladder.py \
   --model_name_or_path bert-base-cased \
   --task_name $TASK_NAME \
   --do_train \
@@ -23,7 +22,6 @@ CUDA_VISIBLE_DEVICES=0 WANDB_DISABLED=0 HF_DATASETS_OFFLINE=1 TRANSFORMERS_OFFLI
   --per_device_eval_batch_size 32 \
   --learning_rate $lr \
   --num_train_epochs $ep \
-  --report_to wandb \
   --output_dir ckpt/$run_name/ \
   --run_name $run_name \
   --weight_decay $wd \

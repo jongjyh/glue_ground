@@ -1,4 +1,3 @@
-from turtle import back, forward
 from  transformers.models.bert.modeling_bert import *
 import torch.nn as nn
 class LadderLayers(nn.Module):
@@ -76,7 +75,7 @@ class Ladder(nn.Module):
         side_config =copy.deepcopy(config)
         side_config.hidden_size=side_config.hidden_size // self.r
         side_config.intermediate_size=side_config.intermediate_size //self.r
-        side_config.num_attention_heads=2
+        side_config.num_attention_heads=6
         self.ladder_layers = nn.ModuleList([BertLayer(side_config) for _ in range(self.num_layers)])
         if input_mode == 'intermediate':
             self.in_dim = config.intermediate_size
@@ -109,6 +108,7 @@ class LadderBertEncoder(BertEncoder):
         self.up_modules = nn.ModuleList([nn.Linear(config.hidden_size//config.r,config.hidden_size) for _ in range(config.num_hidden_layers)])
         self.down_modules = nn.ModuleList([nn.Linear(config.hidden_size,config.hidden_size//config.r) for _ in range(config.num_hidden_layers)])
         self.gates = nn.ParameterList([nn.Parameter(torch.tensor([0.])) for _ in range(config.num_hidden_layers)])
+        self.b_gates = nn.ParameterList([nn.Parameter(torch.tensor([-0.219722])) for _ in range(config.num_hidden_layers)])
         
         
 
@@ -195,10 +195,10 @@ class LadderBertEncoder(BertEncoder):
                 else:
                     ladder_outputs = ladder_hidden_states
 
-            # u=torch.sigmoid(ladder_module.beta_gate / self.b_tem)
-            u=0.1
-            # hidden_states = (1-u)*layer_outputs[0]+u*backbone_outputs
-            hidden_states = layer_outputs[0]
+            u=torch.sigmoid(self.b_gates[i] / self.b_tem)
+            # u=0.1
+            hidden_states = (1-u)*layer_outputs[0]+u*backbone_outputs.detach()
+            # hidden_states = layer_outputs[0]
             ladder_hidden_states = ladder_outputs
             if use_cache:
                 next_decoder_cache += (layer_outputs[-1],)
@@ -210,7 +210,7 @@ class LadderBertEncoder(BertEncoder):
         # merge the final feature or not
         if backbone_outputs is not None:
             # hidden_states = u*layer_outputs[0]+(1-u)*backbone_outputs
-            hidden_states = u*layer_outputs[0] + (1-u) *self.ladder.output_last_logits(ladder_hidden_states)
+            hidden_states = self.ladder.output_last_logits(ladder_hidden_states)
         else:
             hidden_states = layer_outputs[0]
         if output_hidden_states:
@@ -327,7 +327,24 @@ class LadderBertForSequenceClassification(BertForSequenceClassification):
         self.freeze()
     
     def freeze(self):
+        logger.info("***** Trainable Parameters ******")
+        total_p = 0
+        trainable_p = 0
+        
         for n,m in self.named_parameters():
             # if not('ladder' in n or 'classifier' in n) :
-            if not('ladder' in n ) :
+            total_p +=m.numel()
+            if not('ladder' in n or 'down_modules' in n or 'up_modules'  in n or 'gates' in n) :
                 m.requires_grad_(False)
+            else:
+                trainable_p += m.numel()
+                logger.info("%s",n)
+        
+        logger.info("***** Parameter Summary ******")
+
+        logger.info("total parameters(M): %s",str(total_p//(2**20)))
+        logger.info("trainable paramters(M): %s",str(trainable_p//(2**20)))
+        logger.info("trainable ratio: %s",str(trainable_p/total_p*100))
+            
+        
+        
