@@ -15,9 +15,9 @@ structure=side_ladder
 WANDB_DISABLED=none
 # run_name=normal_${TASK_NAME}_bert_lr${lr}_wd${wd}_ep${ep}
 run_name=${structure}_${TASK_NAME}_bert_lr${lr}_seed${seed}_wd${wd}_ep${ep}_input${input_mode}_r${r}_u${u}_atem${a_tem}_btem${b_tem}_bmode${beta_mode}
-# CUDA_VISIBLE_DEVICES=0 WANDB_DISABLED=0 HF_DATASETS_OFFLINE=1 TRANSFORMERS_OFFLINE=1 python -m debugpy --listen 5678 run_ladder.py \
 # CUDA_VISIBLE_DEVICES=0 WANDB_DISABLED=0 HF_DATASETS_OFFLINE=1 TRANSFORMERS_OFFLINE=1 python  run_ladder.py \
-CUDA_VISIBLE_DEVICES=0  HF_DATASETS_OFFLINE=1 TRANSFORMERS_OFFLINE=1 python -m debugpy --listen 5678 ../run_ladder.py \
+# CUDA_VISIBLE_DEVICES=0  HF_DATASETS_OFFLINE=1 TRANSFORMERS_OFFLINE=1 python run_ladder.py \
+CUDA_VISIBLE_DEVICES=0 WANDB_DISABLED=0 HF_DATASETS_OFFLINE=1 TRANSFORMERS_OFFLINE=1 python -m debugpy --listen 5678 run_ladder.py \
   --model_name_or_path bert-base-cased \
   --structure ${structure} \
   --task_name $TASK_NAME \

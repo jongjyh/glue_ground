@@ -83,7 +83,7 @@ class LadderBertEncoder(BertEncoder):
                     ladder_outputs = ladder_hidden_states
 
             u=torch.sigmoid(ladder_module.beta_gate / self.b_tem)
-            hidden_states = (1-u)*layer_outputs[0]+u*backbone_outputs
+            hidden_states = (1-u)*layer_outputs[0]+u*backbone_outputs.detach()
             ladder_hidden_states = ladder_outputs
             if use_cache:
                 next_decoder_cache += (layer_outputs[-1],)
