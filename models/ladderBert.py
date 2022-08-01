@@ -70,21 +70,24 @@ class LadderBertEncoder(BertEncoder):
                     past_key_value,
                     output_attentions,
                     ladder_module,
+                    ladder_hidden_states,
                 )
-                if 0<=i<=11:
-                    ladder_outputs,backbone_outputs = ladder_module(
-                        ladder_hidden_states ,
-                        # layer_outputs[1] ,
-                        # layer_outputs[0] if i == 0 or i==5 or i== 11 else None
-                        layer_outputs[0] 
-                    )
-                    if backbone_outputs is None: backbone_outputs = layer_outputs[0]
-                else:
-                    ladder_outputs = ladder_hidden_states
+                # if 0<=i<=11:
+                #     ladder_outputs,backbone_outputs = ladder_module(
+                #         ladder_hidden_states ,
+                #         # layer_outputs[1] ,
+                #         # layer_outputs[0] if i == 0 or i==5 or i== 11 else None
+                #         layer_outputs[0] 
+                #     )
+                #     if backbone_outputs is None: backbone_outputs = layer_outputs[0]
+                # else:
+                #     ladder_outputs = ladder_hidden_states
 
-            u=torch.sigmoid(ladder_module.beta_gate / self.b_tem)
-            hidden_states = (1-u)*layer_outputs[0]+u*backbone_outputs.detach()
-            ladder_hidden_states = ladder_outputs
+            # u=torch.sigmoid(ladder_module.beta_gate / self.b_tem)
+            # hidden_states = (1-u)*layer_outputs[0]+u*backbone_outputs.detach()
+            # ladder_hidden_states = ladder_outputs
+            hidden_states = layer_outputs[0]
+            ladder_hidden_states = layer_outputs[-1]
             if use_cache:
                 next_decoder_cache += (layer_outputs[-1],)
             if output_attentions:
@@ -93,10 +96,11 @@ class LadderBertEncoder(BertEncoder):
                     all_cross_attentions = all_cross_attentions + (layer_outputs[2],)
 
         # merge the final feature or not
-        if backbone_outputs is not None:
-            hidden_states = u*layer_outputs[0]+(1-u)*backbone_outputs
-        else:
-            hidden_states = layer_outputs[0]
+        # if backbone_outputs is not None:
+        #     hidden_states = u*layer_outputs[0]+(1-u)*backbone_outputs
+        # else:
+        # hidden_states = layer_outputs[0]
+        hidden_states = self.ladder.output_last_logits(ladder_hidden_states)
         if output_hidden_states:
             all_hidden_states = all_hidden_states + (hidden_states,)
 
@@ -122,9 +126,13 @@ class LadderBertEncoder(BertEncoder):
 
 
 class LadderBertLayer(BertLayer):
+    def __init__(self, config):
+        super().__init__(config)
+        self.ladder_up = nn.Linear(config.hidden_size//config.r,config.hidden_size)
     def feed_forward_chunk(self, attention_output):
         intermediate_output = self.intermediate(attention_output)
         layer_output = self.output(intermediate_output, attention_output)
+        # layer_output = self.output(intermediate_output, attention_output).detach()
         return layer_output,intermediate_output
     def forward(
         self,
@@ -136,9 +144,13 @@ class LadderBertLayer(BertLayer):
         past_key_value: Optional[Tuple[Tuple[torch.FloatTensor]]] = None,
         output_attentions: Optional[bool] = False,
         ladder_module = None,
+        ladder_hidden_states = None
     ) -> Tuple[torch.Tensor]:
         # decoder uni-directional self-attention cached key/values tuple is at positions 1,2
         self_attn_past_key_value = past_key_value[:2] if past_key_value is not None else None
+        
+        # hidden_states = .9 * hidden_states + .1 * self.ladder_up(ladder_hidden_states)
+
         self_attention_outputs = self.attention(
             hidden_states,
             attention_mask,
@@ -147,6 +159,15 @@ class LadderBertLayer(BertLayer):
             past_key_value=self_attn_past_key_value,
         )
         attention_output = self_attention_outputs[0]
+        
+        attention_output = .9*attention_output + .1 *self.ladder_up(ladder_hidden_states)
+        # ladder_hidden_states,backbone_outputs = ladder_module(
+        #     ladder_hidden_states ,
+        #     # layer_outputs[1] ,
+        #     # layer_outputs[0] if i == 0 or i==5 or i== 11 else None
+        #     attention_output
+        # )
+        # attention_output = attention_output.detach()
 
         # if decoder, the last output is tuple of self-attn cache
         if self.is_decoder:
@@ -183,7 +204,15 @@ class LadderBertLayer(BertLayer):
         layer_output = apply_chunking_to_forward(
             self.feed_forward_chunk, self.chunk_size_feed_forward, self.seq_len_dim, attention_output
         )
+        ladder_hidden_states,backbone_outputs = ladder_module(
+            ladder_hidden_states ,
+            # layer_outputs[1] ,
+            # layer_outputs[0] if i == 0 or i==5 or i== 11 else None
+            layer_output[0]
+        )
+
         outputs = layer_output + outputs
+        outputs = outputs + (ladder_hidden_states,)
 
         # if decoder, return the attn key/values as the last output
         if self.is_decoder:
